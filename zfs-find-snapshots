@@ -1,0 +1,103 @@
+#!/usr/bin/env bash
+
+set -euEo pipefail
+
+zfs-get-dataset-by-mountpoint()  {
+    local mountpoint
+    mountpoint="$1"
+
+    zfs get -pH -t filesystem -o name,value mountpoint | grep -E "\s+$mountpoint$" | cut -f1
+}
+
+find-in-zfs-snapshot() {
+    local dir
+    local original
+    local rel_path
+    dir="$1"
+    original="$2"
+
+    # Strip dataset mountpoint.
+    rel_path="${original#"$dir"/}"
+    # Strip .zfs/snapshot/$snapshot_name if we are already in a mounted snapshot directory.
+    rel_path="${rel_path#.zfs/snapshot/*/}"
+
+    if [[ -d "$dir/.zfs/snapshot" ]]; then
+        local zfs_dataset        
+        zfs_dataset="$(zfs-get-dataset-by-mountpoint "$dir")"
+
+        for snapshot_dir in "$dir"/.zfs/snapshot/* ; do
+            local file_snapshot
+            local snapshot_suffix
+            local snapshot_name
+
+            snapshot_suffix="${snapshot_dir#"$dir"/.zfs/snapshot/}"
+            snapshot_name="$zfs_dataset@$snapshot_suffix"
+
+            file_snapshot="$snapshot_dir/$rel_path"
+
+            if [[ -f "$file_snapshot" || -d "$file_snapshot" ]]; then
+                printf "%s\n" "$snapshot_name"
+            fi
+
+        done
+        return 0
+    fi
+
+    return 1
+}
+
+walktoroot() {
+    local dir
+    local original
+
+    dir="$1"
+    original="$2"
+
+    if find-in-zfs-snapshot "$dir" "$original"; then
+        return 0
+    fi
+
+    if [[ "$dir" = "/" ]]; then
+        printf "No snapshots found!\n"
+        return 1
+    fi
+
+    walktoroot "$(dirname "$dir")" "$original"
+}
+
+
+usage() {
+    cat << HEREDOC
+Usage: $(basename "$0") PATH
+
+Finds all ZFS snapshots that contain PATH.
+
+optional arguments:
+-h, --help		show this help message and exit
+
+HEREDOC
+}
+
+
+main() {
+   local realpath 
+
+    while [[ $# -gt 0 ]]; do
+        key="$1"
+        case "$key" in
+            -h|--help)
+            usage
+            exit 0
+            ;;
+            *)
+            realpath="$(realpath "$1")"
+            ;;
+        esac
+        shift
+    done
+
+    # Realpath also traverses symbolic links.
+    walktoroot "$(dirname "$realpath")" "$realpath"
+}
+
+main "${@}"
